@@ -34,10 +34,23 @@ def save_last_data(text):
     with open("last_price.txt", "w", encoding="utf-8") as f:
         f.write(text)
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    requests.post(url, json=payload, timeout=20, proxies={"http": None, "https": None})
+def send_telegram_message(bot_token, chat_id, text, parse_mode="HTML", retries=3):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, json=payload, timeout=20, proxies={"http": None, "https": None})
+            print(f"Telegram response: {r.status_code} — {r.text}")  # 👈 thêm dòng này
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            print(f"❌ Telegram send error: {e}")
+            raise
 
 def main():
     data = get_gold_price()
@@ -54,3 +67,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
