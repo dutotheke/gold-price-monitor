@@ -2,7 +2,7 @@ name: Gold Price Monitor
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # chạy mỗi 15 phút
+    - cron: "*/1 * * * *"   # chạy mỗi 15 phút
   workflow_dispatch:
 
 jobs:
