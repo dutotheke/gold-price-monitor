@@ -1,7 +1,9 @@
 import os
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 
+print("🔁 Cron job chạy lúc", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -67,5 +69,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
