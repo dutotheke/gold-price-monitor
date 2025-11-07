@@ -59,7 +59,7 @@ def main():
     last_text = load_last_data()
     if text != last_text:
         msg = f"🪙 Cập nhật giá vàng mới:\n\n{text}"
-        send_telegram_message(msg)
+        send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, msg)
         save_last_data(text)
         print("✅ Đã gửi Telegram (có thay đổi).")
     else:
@@ -67,4 +67,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
