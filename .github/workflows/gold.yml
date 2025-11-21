@@ -1,15 +1,17 @@
-name: Gold Price Monitor
+name: Run gold price monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # chạy mỗi 5 phút (GitHub không cho <5 phút)
-  workflow_dispatch:
+    - cron: "*/10 * * * *"   # mỗi 10 phút
+  workflow_dispatch:          # cho phép chạy tay từ UI
 
 jobs:
-  run-script:
+  run-monitor:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -18,12 +20,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install requests beautifulsoup4
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run gold price script
+      - name: Run gold price monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python personal_prj.py
-# force trigger
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+        run: |
+          python personal_prj.py
