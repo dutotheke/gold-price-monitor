@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import html
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
@@ -282,7 +283,8 @@ def send_telegram_message(
 # -----------------------------
 def build_message(items: List[GoldItem]) -> str:
     """
-    Hiển thị bảng giá vàng dạng table alignment đẹp cho Telegram bằng <pre>.
+    Hiển thị bảng giá vàng dạng table alignment đẹp cho Telegram bằng <pre><code>.
+    Căn cột động theo độ dài thực tế của dữ liệu.
     """
 
     header = (
@@ -290,27 +292,59 @@ def build_message(items: List[GoldItem]) -> str:
         f"⏱ {datetime.now().strftime('%H:%M %d/%m/%Y')}\n\n"
     )
 
+    # Chuẩn bị dữ liệu thô cho bảng: [ (name, buy_str, sell_str), ... ]
+    rows: List[tuple[str, str, str]] = []
+
     # Dòng tiêu đề bảng
-    table_lines = []
-    table_lines.append(f"{'LOẠI VÀNG':<30}{'MUA VÀO':>12}{'BÁN RA':>12}")
+    rows.append(("LOẠI VÀNG", "MUA VÀO", "BÁN RA"))
 
     # Các dòng dữ liệu
     for item in items:
-        name = item.name[:30]  # Giới hạn độ dài để bảng không vỡ
+        name = item.name.strip()
         buy_s = format_vnd(item.buy)
         sell_s = format_vnd(item.sell)
 
-        table_lines.append(f"{name:<30}{buy_s:>12}{sell_s:>12}")
+        rows.append((name, buy_s, sell_s))
 
-    table_text = "\n".join(table_lines)
+    # Tính độ rộng tối đa cho từng cột
+    col1_width = max(len(r[0]) for r in rows)
+    col2_width = max(len(r[1]) for r in rows)
+    col3_width = max(len(r[2]) for r in rows)
 
-    # Gói bảng trong thẻ <pre> để Telegram giữ nguyên spacing
+    # Build từng dòng với padding trái/phải
+    lines: List[str] = []
+    for idx, (name, buy_s, sell_s) in enumerate(rows):
+        # Header để in đậm/nhìn rõ hơn: có thể thêm gạch chân nếu thích
+        if idx == 0:
+            line = (
+                name.ljust(col1_width)
+                + "  "
+                + buy_s.rjust(col2_width)
+                + "  "
+                + sell_s.rjust(col3_width)
+            )
+        else:
+            line = (
+                name.ljust(col1_width)
+                + "  "
+                + buy_s.rjust(col2_width)
+                + "  "
+                + sell_s.rjust(col3_width)
+            )
+        lines.append(line)
+
+    table_text = "\n".join(lines)
+
+    # Escape để tránh trường hợp tên sản phẩm có ký tự đặc biệt HTML
+    table_text_escaped = html.escape(table_text)
+
+    # Gói bảng trong <pre><code> để Telegram giữ nguyên spacing + monospace
     msg = (
-        header +
-        "<pre>" +
-        table_text +
-        "</pre>" +
-        "\nNguồn: baotinmanhhai.vn/gia-vang-hom-nay"
+        header
+        + "<pre><code>"
+        + table_text_escaped
+        + "</code></pre>"
+        + "\nNguồn: baotinmanhhai.vn/gia-vang-hom-nay"
     )
 
     return msg
@@ -358,4 +392,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
