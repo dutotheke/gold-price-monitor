@@ -282,27 +282,38 @@ def send_telegram_message(
 # -----------------------------
 def build_message(items: List[GoldItem]) -> str:
     """
-    Chuyển list GoldItem thành text gửi Telegram.
-    Có thể custom thêm (lọc theo loại, sort, highlight…).
+    Hiển thị bảng giá vàng dạng table alignment đẹp cho Telegram bằng <pre>.
     """
-    lines: List[str] = []
 
-    lines.append("🪙 <b>Cập nhật giá vàng Bảo Tín Mạnh Hải</b>")
-    lines.append(f"⏱ Thời điểm crawl: {datetime.now().strftime('%H:%M %d/%m/%Y')}")
-    lines.append("")
-    lines.append("<pre>LOẠI VÀNG                      MUA VÀO       BÁN RA</pre>")
+    header = (
+        "🪙 <b>Cập nhật giá vàng Bảo Tín Mạnh Hải</b>\n"
+        f"⏱ {datetime.now().strftime('%H:%M %d/%m/%Y')}\n\n"
+    )
 
+    # Dòng tiêu đề bảng
+    table_lines = []
+    table_lines.append(f"{'LOẠI VÀNG':<30}{'MUA VÀO':>12}{'BÁN RA':>12}")
+
+    # Các dòng dữ liệu
     for item in items:
-        name = item.name[:28]  # tránh quá dài
+        name = item.name[:30]  # Giới hạn độ dài để bảng không vỡ
         buy_s = format_vnd(item.buy)
         sell_s = format_vnd(item.sell)
-        line = f"{name:<28} {buy_s:>10}  {sell_s:>10}"
-        lines.append(line)
 
-    lines.append("")
-    lines.append("Nguồn: baotinmanhhai.vn/gia-vang-hom-nay")
+        table_lines.append(f"{name:<30}{buy_s:>12}{sell_s:>12}")
 
-    return "\n".join(lines)
+    table_text = "\n".join(table_lines)
+
+    # Gói bảng trong thẻ <pre> để Telegram giữ nguyên spacing
+    msg = (
+        header +
+        "<pre>" +
+        table_text +
+        "</pre>" +
+        "\nNguồn: baotinmanhhai.vn/gia-vang-hom-nay"
+    )
+
+    return msg
 
 
 # -----------------------------
@@ -347,3 +358,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
