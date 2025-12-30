@@ -31,7 +31,29 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           python personal_prj.py compare
-
+      
+      - name: Ensure Playwright cache dir exists
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          mkdir -p ~/.cache/ms-playwright
+      
+      - name: Cache Playwright browsers
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-v1
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      
+      - name: Install playwright (only if changed)
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+        run: |
+          pip install playwright
+          python -m playwright install chromium
+      
       - name: Notify (only if changed)
         if: steps.compare.outputs.changed == 'true'
         env:
@@ -40,5 +62,6 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN_GIST: ${{ secrets.GITHUB_TOKEN_GIST }}
           GIST_ID: ${{ secrets.GIST_ID }}
+          PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
         run: |
           python personal_prj.py notify
