@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import time
-import html
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,14 +16,15 @@ from bs4 import BeautifulSoup
 # Cấu hình / hằng số
 # -----------------------------
 BAOTINMANHHAI_URL = "https://baotinmanhhai.vn/gia-vang-hom-nay"
-REQUEST_TIMEOUT = 20  # giây
 
+REQUEST_TIMEOUT = 20  # giây
 TELEGRAM_RETRIES = 3
 TELEGRAM_RETRY_DELAY = 3  # giây
 
-GIST_FILE_NAME = "gold_price_snapshot.txt"
-LAST_DATA_FILE = "last_price.txt"          # fallback local (dev)
-SNAPSHOT_PATH = "gold_snapshot.txt"        # file trung gian giữa compare -> notify
+GIST_FILE_NAME = "gold_price_snapshot.txt"  # file snapshot trên Gist
+LAST_DATA_FILE = "last_price.txt"           # fallback local (dev)
+SNAPSHOT_PATH = "gold_snapshot.txt"         # file trung gian compare -> notify
+SCREENSHOT_PATH = "gold_table.png"          # ảnh gửi Telegram
 
 
 # -----------------------------
@@ -45,24 +45,22 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 
+def normalize_text(s: str) -> str:
+    s = (s or "").replace("\u00a0", " ").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
 def parse_vnd(value: str) -> Optional[int]:
+    """
+    Chuyển '15.170.000' => 15170000
+    Nếu trống / '-' / '—' => None
+    """
     value = (value or "").strip()
     if value in ("", "-", "—"):
         return None
     digits = re.sub(r"[^\d]", "", value)
     return int(digits) if digits else None
-
-
-def format_vnd(value: Optional[int]) -> str:
-    if value is None:
-        return "-"
-    return f"{value:,.0f}".replace(",", ".")
-
-
-def normalize_text(s: str) -> str:
-    s = (s or "").replace("\u00a0", " ").strip()
-    s = re.sub(r"\s+", " ", s)
-    return s
 
 
 def canonical_snapshot(items: List[GoldItem]) -> str:
@@ -106,7 +104,7 @@ def load_file(path: str) -> str:
 
 def write_output(name: str, value: str) -> None:
     """
-    GitHub Actions step output: dùng file $GITHUB_OUTPUT
+    GitHub Actions step output via $GITHUB_OUTPUT
     """
     out = os.getenv("GITHUB_OUTPUT")
     if not out:
@@ -117,7 +115,7 @@ def write_output(name: str, value: str) -> None:
 
 
 # -----------------------------
-# Crawler
+# Crawler (HTML mới)
 # -----------------------------
 def fetch_gold_page(url: str = BAOTINMANHHAI_URL) -> str:
     headers = {
@@ -134,32 +132,30 @@ def fetch_gold_page(url: str = BAOTINMANHHAI_URL) -> str:
 
 
 def parse_gold_table(page_html: str) -> List[GoldItem]:
+    """
+    Parse theo cấu trúc mới:
+    - container: .table-responsive.gold-table
+    - table: .gold-table-content
+    """
     soup = BeautifulSoup(page_html, "html.parser")
 
-    heading = soup.find(
-        string=lambda t: isinstance(t, str) and "GIÁ VÀNG HÔM NAY" in t.upper()
-    )
-    table = None
-    if heading:
-        section = heading.find_parent()
-        if section:
-            table = section.find("table")
-
-    if table is None:
-        table = soup.find("table")
-
-    if table is None:
-        raise RuntimeError("Không tìm thấy bảng giá vàng trong HTML.")
+    table = soup.select_one(".gold-table-content")
+    if not table:
+        raise RuntimeError("Không tìm thấy .gold-table-content trong HTML")
 
     items: List[GoldItem] = []
     for tr in table.select("tbody tr"):
-        tds = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(tds) < 2:
+        tds = tr.find_all("td")
+        if len(tds) < 3:
             continue
 
-        name = normalize_text(tds[0])
-        buy = parse_vnd(tds[1]) if len(tds) >= 2 else None
-        sell = parse_vnd(tds[2]) if len(tds) >= 3 else None
+        name = normalize_text(tds[0].get_text(" ", strip=True))
+
+        buy_raw = tds[1].get_text(" ", strip=True)
+        sell_raw = tds[2].get_text(" ", strip=True)
+
+        buy = parse_vnd(buy_raw)
+        sell = parse_vnd(sell_raw)
 
         if not name or (buy is None and sell is None):
             continue
@@ -167,7 +163,8 @@ def parse_gold_table(page_html: str) -> List[GoldItem]:
         items.append(GoldItem(name=name, buy=buy, sell=sell))
 
     if not items:
-        raise RuntimeError("Không parse được bất kỳ dòng giá vàng nào.")
+        raise RuntimeError("Parse được 0 dòng giá vàng")
+
     return items
 
 
@@ -179,7 +176,7 @@ def get_gold_price() -> List[GoldItem]:
 # Gist snapshot
 # -----------------------------
 def get_gist_token() -> Optional[str]:
-    # hỗ trợ cả 2 tên secret (tuỳ repo bạn đặt)
+    # hỗ trợ cả 2 tên secret, tuỳ bạn đặt
     return (os.getenv("GIST_TOKEN") or os.getenv("GITHUB_TOKEN_GIST") or "").strip() or None
 
 
@@ -230,83 +227,73 @@ def save_last_snapshot(text: str) -> None:
 
 
 # -----------------------------
-# Telegram
+# Telegram: sendPhoto
 # -----------------------------
-def send_telegram_message(
+def send_telegram_photo(
     bot_token: str,
     chat_id: str,
-    text: str,
-    parse_mode: str = "HTML",
+    photo_path: str,
+    caption: str,
     retries: int = TELEGRAM_RETRIES,
 ) -> None:
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode,
-        "disable_web_page_preview": True,
-    }
-
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
     last_error: Optional[Exception] = None
 
     for attempt in range(1, retries + 1):
         try:
-            log(f"Gửi Telegram (attempt {attempt}/{retries})...")
-            r = requests.post(
-                url,
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-                proxies={"http": None, "https": None},
-            )
+            log(f"Gửi Telegram photo (attempt {attempt}/{retries})...")
+            with open(photo_path, "rb") as f:
+                files = {"photo": f}
+                data = {"chat_id": chat_id, "caption": caption}
+                r = requests.post(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=REQUEST_TIMEOUT,
+                    proxies={"http": None, "https": None},
+                )
             log(f"Telegram response: {r.status_code} — {r.text}")
             r.raise_for_status()
             return
         except Exception as e:
             last_error = e
-            log(f"❌ Lỗi gửi Telegram: {e}")
+            log(f"❌ Lỗi gửi Telegram photo: {e}")
             if attempt < retries:
                 log(f"👉 Thử lại sau {TELEGRAM_RETRY_DELAY}s...")
                 time.sleep(TELEGRAM_RETRY_DELAY)
 
-    raise RuntimeError(f"Gửi Telegram thất bại sau {retries} lần") from last_error
+    raise RuntimeError(f"Gửi Telegram photo thất bại sau {retries} lần") from last_error
 
 
 # -----------------------------
-# Build message hiển thị
+# Screenshot: Playwright (lazy import)
 # -----------------------------
-def build_message(items: List[GoldItem]) -> str:
-    header = (
-        "🪙 <b>Cập nhật giá vàng Bảo Tín Mạnh Hải</b>\n"
-        f"⏱ {datetime.now().strftime('%H:%M %d/%m/%Y')}\n\n"
-    )
+def capture_gold_table_screenshot(out_path: str = SCREENSHOT_PATH) -> str:
+    """
+    Render trang và chụp riêng vùng .table-responsive.gold-table
+    Chỉ gọi khi đã xác định có thay đổi.
+    """
+    from playwright.sync_api import sync_playwright
 
-    rows: List[tuple[str, str, str]] = [("LOẠI VÀNG", "MUA VÀO", "BÁN RA")]
-    for item in items:
-        name = normalize_text(item.name)
-        rows.append((name, format_vnd(item.buy), format_vnd(item.sell)))
+    log("Render trang bằng Playwright để chụp screenshot...")
 
-    col1_width = max(len(r[0]) for r in rows)
-    col2_width = max(len(r[1]) for r in rows)
-    col3_width = max(len(r[2]) for r in rows)
-
-    lines: List[str] = []
-    for name, buy_s, sell_s in rows:
-        lines.append(
-            name.ljust(col1_width)
-            + "  "
-            + buy_s.rjust(col2_width)
-            + "  "
-            + sell_s.rjust(col3_width)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(
+            viewport={"width": 1200, "height": 900},
+            device_scale_factor=2,
         )
 
-    table_text_escaped = html.escape("\n".join(lines))
-    return (
-        header
-        + "<pre><code>"
-        + table_text_escaped
-        + "</code></pre>"
-        + "\nNguồn: baotinmanhhai.vn/gia-vang-hom-nay"
-    )
+        page.goto(BAOTINMANHHAI_URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_selector(".table-responsive.gold-table", timeout=60000)
+        page.wait_for_timeout(800)
+
+        page.locator(".table-responsive.gold-table").screenshot(path=out_path)
+
+        browser.close()
+
+    log(f"✅ Đã tạo screenshot: {out_path}")
+    return out_path
 
 
 # -----------------------------
@@ -336,9 +323,8 @@ def cmd_compare() -> None:
 def cmd_notify() -> None:
     """
     1) read snapshot_text from SNAPSHOT_PATH
-    2) re-crawl to build message (or parse snapshot -> items)
-       -> ở đây re-crawl để đảm bảo message là dữ liệu mới nhất
-    3) send telegram
+    2) chụp screenshot bảng vàng
+    3) sendPhoto
     4) update gist snapshot ONLY after send success
     """
     bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -350,19 +336,19 @@ def cmd_notify() -> None:
     if not snapshot_text:
         raise RuntimeError(f"Không có snapshot text ở {SNAPSHOT_PATH}")
 
-    # Re-crawl để build message đẹp (giữ nguyên format hiện tại của bạn)
-    items = get_gold_price()
-    msg = build_message(items)
+    img_path = capture_gold_table_screenshot(SCREENSHOT_PATH)
 
-    send_telegram_message(bot_token, chat_id, msg, parse_mode="HTML")
+    caption = f"🪙 Giá vàng Bảo Tín Mạnh Hải\n⏱ {datetime.now().strftime('%H:%M %d/%m/%Y')}"
+    send_telegram_photo(bot_token, chat_id, img_path, caption)
 
-    # Chỉ lưu snapshot sau khi gửi thành công
+    # Chỉ lưu snapshot sau khi gửi ảnh thành công
     save_last_snapshot(snapshot_text)
-    log("✅ Notify done: sent telegram + updated snapshot")
+    log("✅ Notify done: sent screenshot + updated snapshot")
 
 
 def main() -> None:
     import sys
+
     mode = (sys.argv[1] if len(sys.argv) > 1 else "").strip().lower()
     if mode == "compare":
         cmd_compare()
