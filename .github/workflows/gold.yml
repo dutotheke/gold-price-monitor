@@ -2,8 +2,8 @@ name: Run gold price monitor
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # mỗi 10 phút
-  workflow_dispatch:          # cho phép chạy tay từ UI
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
 
 jobs:
   run-monitor:
@@ -17,17 +17,29 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install light deps
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 lxml
 
-      - name: Run gold price monitor
+      - name: Compare snapshot (text)
+        id: compare
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN_GIST: ${{ secrets.GITHUB_TOKEN_GIST }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+        run: |
+          python personal_prj.py compare
+
+      - name: Notify (only if changed)
+        if: steps.compare.outputs.changed == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN_GIST: ${{ secrets.GITHUB_TOKEN_GIST }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          python personal_prj.py
+          python personal_prj.py notify
