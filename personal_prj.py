@@ -17,13 +17,14 @@ from bs4 import BeautifulSoup
 # Cấu hình / hằng số
 # -----------------------------
 BAOTINMANHHAI_URL = "https://baotinmanhhai.vn/gia-vang-hom-nay"
-LAST_DATA_FILE = "last_price.txt"
-
 REQUEST_TIMEOUT = 20  # giây
+
 TELEGRAM_RETRIES = 3
 TELEGRAM_RETRY_DELAY = 3  # giây
 
-GIST_FILE_NAME = "gold_price_snapshot.txt"  # giữ nguyên: lưu text trên Gist
+GIST_FILE_NAME = "gold_price_snapshot.txt"
+LAST_DATA_FILE = "last_price.txt"          # fallback local (dev)
+SNAPSHOT_PATH = "gold_snapshot.txt"        # file trung gian giữa compare -> notify
 
 
 # -----------------------------
@@ -32,7 +33,7 @@ GIST_FILE_NAME = "gold_price_snapshot.txt"  # giữ nguyên: lưu text trên Gis
 @dataclass
 class GoldItem:
     name: str
-    buy: Optional[int]  # một số loại có thể chỉ có giá mua hoặc bán
+    buy: Optional[int]
     sell: Optional[int]
     unit: str = "đồng/chỉ"
 
@@ -41,39 +42,24 @@ class GoldItem:
 # Utils
 # -----------------------------
 def log(msg: str) -> None:
-    """Log đơn giản, có timestamp."""
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 
 def parse_vnd(value: str) -> Optional[int]:
-    """
-    Chuyển chuỗi kiểu '14.780.000' => 14780000 (int).
-    Nếu trống / '-' / '—' / không phải số => None.
-    """
     value = (value or "").strip()
     if value in ("", "-", "—"):
         return None
     digits = re.sub(r"[^\d]", "", value)
-    if not digits:
-        return None
-    return int(digits)
+    return int(digits) if digits else None
 
 
 def format_vnd(value: Optional[int]) -> str:
-    """Format int về dạng '14.780.000' (giống website)."""
     if value is None:
         return "-"
     return f"{value:,.0f}".replace(",", ".")
 
 
-# -----------------------------
-# NEW: Canonical snapshot + hash
-# -----------------------------
-def normalize_name(s: str) -> str:
-    """
-    Chuẩn hoá tên: strip + gom whitespace + thay NBSP.
-    Tránh cảnh báo giả do khác nhau bởi khoảng trắng/NBSP.
-    """
+def normalize_text(s: str) -> str:
     s = (s or "").replace("\u00a0", " ").strip()
     s = re.sub(r"\s+", " ", s)
     return s
@@ -81,26 +67,53 @@ def normalize_name(s: str) -> str:
 
 def canonical_snapshot(items: List[GoldItem]) -> str:
     """
-    Snapshot text ổn định để lưu lên Gist:
+    Snapshot ổn định để lưu lên Gist:
     - normalize name
     - None -> '' cho buy/sell
     - sort theo name để chống reorder HTML
     """
     rows = []
     for it in items:
-        name = normalize_name(it.name)
+        name = normalize_text(it.name)
         buy = "" if it.buy is None else str(int(it.buy))
         sell = "" if it.sell is None else str(int(it.sell))
         rows.append((name, buy, sell))
 
     rows.sort(key=lambda x: x[0])
-
-    # Lưu đúng format bạn đang dùng trên gist
     return "\n".join([f"{n} | {b} | {s}" for n, b, s in rows]).strip()
+
+
+def canonicalize_text_blob(s: str) -> str:
+    return (s or "").replace("\u00a0", " ").replace("\r\n", "\n").strip()
 
 
 def sha256_text(s: str) -> str:
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+
+
+def save_file(path: str, content: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content or "")
+
+
+def load_file(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read() or ""
+    except FileNotFoundError:
+        return ""
+
+
+def write_output(name: str, value: str) -> None:
+    """
+    GitHub Actions step output: dùng file $GITHUB_OUTPUT
+    """
+    out = os.getenv("GITHUB_OUTPUT")
+    if not out:
+        log(f"(local) output {name}={value}")
+        return
+    with open(out, "a", encoding="utf-8") as f:
+        f.write(f"{name}={value}\n")
 
 
 # -----------------------------
@@ -121,15 +134,10 @@ def fetch_gold_page(url: str = BAOTINMANHHAI_URL) -> str:
 
 
 def parse_gold_table(page_html: str) -> List[GoldItem]:
-    """
-    Parse HTML để lấy bảng 'GIÁ VÀNG HÔM NAY'.
-    Selector tương đối “phòng hờ” để tránh vỡ khi layout đổi nhẹ.
-    """
     soup = BeautifulSoup(page_html, "html.parser")
 
     heading = soup.find(
-        string=lambda t: isinstance(t, str)
-        and "GIÁ VÀNG HÔM NAY" in t.upper()
+        string=lambda t: isinstance(t, str) and "GIÁ VÀNG HÔM NAY" in t.upper()
     )
     table = None
     if heading:
@@ -149,7 +157,7 @@ def parse_gold_table(page_html: str) -> List[GoldItem]:
         if len(tds) < 2:
             continue
 
-        name = normalize_name(tds[0])
+        name = normalize_text(tds[0])
         buy = parse_vnd(tds[1]) if len(tds) >= 2 else None
         sell = parse_vnd(tds[2]) if len(tds) >= 3 else None
 
@@ -158,103 +166,67 @@ def parse_gold_table(page_html: str) -> List[GoldItem]:
 
         items.append(GoldItem(name=name, buy=buy, sell=sell))
 
-    return items
-
-
-def get_gold_price() -> List[GoldItem]:
-    page_html = fetch_gold_page()
-    items = parse_gold_table(page_html)
     if not items:
         raise RuntimeError("Không parse được bất kỳ dòng giá vàng nào.")
     return items
 
 
-# -----------------------------
-# Lưu / tải snapshot bằng file (fallback)
-# -----------------------------
-def load_last_data_from_file(path: str = LAST_DATA_FILE) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read() or ""
-    except FileNotFoundError:
-        return ""
-
-
-def save_last_data_to_file(text: str, path: str = LAST_DATA_FILE) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+def get_gold_price() -> List[GoldItem]:
+    return parse_gold_table(fetch_gold_page())
 
 
 # -----------------------------
-# Lưu / tải snapshot bằng Gist
+# Gist snapshot
 # -----------------------------
+def get_gist_token() -> Optional[str]:
+    # hỗ trợ cả 2 tên secret (tuỳ repo bạn đặt)
+    return (os.getenv("GIST_TOKEN") or os.getenv("GITHUB_TOKEN_GIST") or "").strip() or None
+
+
 def load_last_data_from_gist(token: str, gist_id: str) -> str:
-    """
-    Đọc snapshot TEXT từ Gist.
-    Nếu có lỗi => trả về chuỗi rỗng.
-    """
     url = f"https://api.github.com/gists/{gist_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    try:
-        log(f"Đọc snapshot từ Gist: {gist_id}")
-        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 404:
-            log("⚠️ Không tìm thấy Gist với GIST_ID, xem như snapshot rỗng.")
-            return ""
-        resp.raise_for_status()
-        data = resp.json()
-        file_obj = data.get("files", {}).get(GIST_FILE_NAME)
-        if not file_obj:
-            log(f"⚠️ Không thấy file {GIST_FILE_NAME} trong Gist, xem như rỗng.")
-            return ""
-        return file_obj.get("content") or ""
-    except Exception as e:
-        log(f"⚠️ Lỗi khi đọc Gist: {e}, fallback snapshot rỗng.")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if resp.status_code == 404:
         return ""
+    resp.raise_for_status()
+    data = resp.json()
+    file_obj = data.get("files", {}).get(GIST_FILE_NAME)
+    return (file_obj or {}).get("content") or ""
 
 
 def save_last_data_to_gist(token: str, gist_id: str, text: str) -> None:
-    """
-    Cập nhật snapshot TEXT lên Gist (đã tồn tại).
-    """
     url = f"https://api.github.com/gists/{gist_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     payload = {"files": {GIST_FILE_NAME: {"content": text}}}
-    log(f"Cập nhật snapshot lên Gist: {gist_id}")
     resp = requests.patch(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    log("✅ Đã lưu snapshot lên Gist.")
 
 
 def load_last_snapshot() -> str:
-    gist_token = os.getenv("GIST_TOKEN")
-    gist_id = os.getenv("GIST_ID")
-
-    if gist_token and gist_id:
-        return load_last_data_from_gist(gist_token, gist_id)
-
-    log("ℹ️ Không có GIST_TOKEN hoặc GIST_ID, dùng snapshot local (file).")
-    return load_last_data_from_file()
-
-
-def save_last_snapshot(text: str) -> None:
-    gist_token = os.getenv("GIST_TOKEN")
-    gist_id = os.getenv("GIST_ID")
+    gist_token = get_gist_token()
+    gist_id = (os.getenv("GIST_ID") or "").strip()
 
     if gist_token and gist_id:
         try:
-            save_last_data_to_gist(gist_token, gist_id, text)
-            return
+            return load_last_data_from_gist(gist_token, gist_id)
         except Exception as e:
-            log(f"⚠️ Lỗi lưu Gist, fallback sang file local: {e}")
+            log(f"⚠️ Lỗi đọc Gist: {e}, fallback file local.")
+            return load_file(LAST_DATA_FILE)
 
-    save_last_data_to_file(text)
+    log("ℹ️ Không có Gist token/GIST_ID, dùng snapshot local (file).")
+    return load_file(LAST_DATA_FILE)
+
+
+def save_last_snapshot(text: str) -> None:
+    gist_token = get_gist_token()
+    gist_id = (os.getenv("GIST_ID") or "").strip()
+
+    if gist_token and gist_id:
+        save_last_data_to_gist(gist_token, gist_id, text)
+        return
+
+    save_file(LAST_DATA_FILE, text)
 
 
 # -----------------------------
@@ -308,14 +280,10 @@ def build_message(items: List[GoldItem]) -> str:
         f"⏱ {datetime.now().strftime('%H:%M %d/%m/%Y')}\n\n"
     )
 
-    rows: List[tuple[str, str, str]] = []
-    rows.append(("LOẠI VÀNG", "MUA VÀO", "BÁN RA"))
-
+    rows: List[tuple[str, str, str]] = [("LOẠI VÀNG", "MUA VÀO", "BÁN RA")]
     for item in items:
-        name = normalize_name(item.name)
-        buy_s = format_vnd(item.buy)
-        sell_s = format_vnd(item.sell)
-        rows.append((name, buy_s, sell_s))
+        name = normalize_text(item.name)
+        rows.append((name, format_vnd(item.buy), format_vnd(item.sell)))
 
     col1_width = max(len(r[0]) for r in rows)
     col2_width = max(len(r[1]) for r in rows)
@@ -332,7 +300,6 @@ def build_message(items: List[GoldItem]) -> str:
         )
 
     table_text_escaped = html.escape("\n".join(lines))
-
     return (
         header
         + "<pre><code>"
@@ -343,48 +310,66 @@ def build_message(items: List[GoldItem]) -> str:
 
 
 # -----------------------------
-# Main
+# 2-phase commands
 # -----------------------------
-def main() -> None:
-    print("🔁 Cron job chạy lúc", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    if not bot_token or not chat_id:
-        log("⚠️ Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID. Thoát.")
-        return
-
-    try:
-        items = get_gold_price()
-    except Exception as e:
-        log(f"❌ Lỗi lấy giá vàng: {e}")
-        return
-
-    # NEW: canonical snapshot (text) -> hash để so sánh
+def cmd_compare() -> None:
+    """
+    1) crawl+parse -> snapshot_text
+    2) load last snapshot from gist/file
+    3) compare hash
+    4) write snapshot_text to SNAPSHOT_PATH
+    5) output changed=true/false
+    """
+    items = get_gold_price()
     snapshot_text = canonical_snapshot(items)
-    snapshot_hash = sha256_text(snapshot_text)
+    save_file(SNAPSHOT_PATH, snapshot_text)
 
-    # last snapshot là TEXT, nhưng so sánh bằng hash
     last_text = load_last_snapshot()
-    last_hash = sha256_text(canonical_snapshot([
-        # Không re-parse lại text cũ (không cần). Chỉ canonicalize theo string.
-        # Ở đây đơn giản: canonicalize string bằng normalize newline/whitespace.
-        # => làm theo hướng nhẹ: canonicalize trực tiếp trên last_text.
-    ]) if False else (last_text.replace("\u00a0", " ").replace("\r\n", "\n").strip()))
+    new_hash = sha256_text(snapshot_text)
+    old_hash = sha256_text(canonicalize_text_blob(last_text))
 
-    # So sánh hash
-    if snapshot_hash != last_hash:
-        log(f"🔔 Phát hiện thay đổi (hash): {last_hash[:8]} -> {snapshot_hash[:8]}")
-        msg = build_message(items)
-        try:
-            send_telegram_message(bot_token, chat_id, msg, parse_mode="HTML")
-            save_last_snapshot(snapshot_text)  # vẫn lưu TEXT lên Gist/file
-            log("✅ Đã gửi Telegram (có thay đổi).")
-        except Exception as e:
-            log(f"❌ Gửi Telegram thất bại: {e}")
+    changed = "true" if new_hash != old_hash else "false"
+    log(f"Compare hash: {old_hash[:8]} -> {new_hash[:8]} changed={changed}")
+    write_output("changed", changed)
+
+
+def cmd_notify() -> None:
+    """
+    1) read snapshot_text from SNAPSHOT_PATH
+    2) re-crawl to build message (or parse snapshot -> items)
+       -> ở đây re-crawl để đảm bảo message là dữ liệu mới nhất
+    3) send telegram
+    4) update gist snapshot ONLY after send success
+    """
+    bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if not bot_token or not chat_id:
+        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID")
+
+    snapshot_text = load_file(SNAPSHOT_PATH).strip()
+    if not snapshot_text:
+        raise RuntimeError(f"Không có snapshot text ở {SNAPSHOT_PATH}")
+
+    # Re-crawl để build message đẹp (giữ nguyên format hiện tại của bạn)
+    items = get_gold_price()
+    msg = build_message(items)
+
+    send_telegram_message(bot_token, chat_id, msg, parse_mode="HTML")
+
+    # Chỉ lưu snapshot sau khi gửi thành công
+    save_last_snapshot(snapshot_text)
+    log("✅ Notify done: sent telegram + updated snapshot")
+
+
+def main() -> None:
+    import sys
+    mode = (sys.argv[1] if len(sys.argv) > 1 else "").strip().lower()
+    if mode == "compare":
+        cmd_compare()
+    elif mode == "notify":
+        cmd_notify()
     else:
-        log("⏳ Không có thay đổi, không gửi Telegram.")
+        raise SystemExit("Usage: python personal_prj.py compare|notify")
 
 
 if __name__ == "__main__":
