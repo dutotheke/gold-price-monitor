@@ -269,13 +269,9 @@ def send_telegram_photo(
 # Screenshot: Playwright (lazy import)
 # -----------------------------
 def capture_gold_table_screenshot(out_path: str = SCREENSHOT_PATH) -> str:
-    """
-    Render trang và chụp riêng vùng .table-responsive.gold-table
-    Chỉ gọi khi đã xác định có thay đổi.
-    """
     from playwright.sync_api import sync_playwright
 
-    log("Render trang bằng Playwright để chụp screenshot...")
+    log("Render trang bằng Playwright để chụp screenshot (ẩn quảng cáo)...")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -285,16 +281,51 @@ def capture_gold_table_screenshot(out_path: str = SCREENSHOT_PATH) -> str:
         )
 
         page.goto(BAOTINMANHHAI_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector(".table-responsive.gold-table", timeout=60000)
-        page.wait_for_timeout(800)
 
-        page.locator(".table-responsive.gold-table").screenshot(path=out_path)
+        # Đợi bảng vàng xuất hiện
+        page.wait_for_selector(".gold-table-content", timeout=60000)
+
+        # -----------------------------
+        # 🔥 ẨN QUẢNG CÁO / OVERLAY
+        # -----------------------------
+        page.add_style_tag(content="""
+            /* Ẩn các phần tử fixed / sticky (quảng cáo nổi) */
+            *[style*="position: fixed"],
+            *[style*="position:sticky"],
+            *[style*="position: sticky"] {
+                display: none !important;
+            }
+
+            /* Ẩn các element có z-index cao bất thường */
+            * {
+                z-index: auto !important;
+            }
+
+            /* Một số selector quảng cáo phổ biến (nếu có) */
+            .ads, .ad, .adsbox, .popup, .modal, .overlay,
+            [id*="ads"], [class*="ads"],
+            [id*="popup"], [class*="popup"],
+            [id*="banner"], [class*="banner"] {
+                display: none !important;
+            }
+        """)
+
+        # Đợi DOM ổn định sau khi remove quảng cáo
+        page.wait_for_timeout(500)
+
+        # Ưu tiên chụp toàn bộ container bảng vàng
+        locator = page.locator(".table-responsive.gold-table")
+
+        # Fallback nếu container ngoài đổi class
+        if locator.count() == 0:
+            locator = page.locator(".gold-table-content")
+
+        locator.screenshot(path=out_path)
 
         browser.close()
 
-    log(f"✅ Đã tạo screenshot: {out_path}")
+    log(f"✅ Đã tạo screenshot (đã loại quảng cáo): {out_path}")
     return out_path
-
 
 # -----------------------------
 # 2-phase commands
@@ -360,3 +391,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
