@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-
-      - name: Install light deps
+          
+      - name: Install dependencies (inline)
         run: |
           pip install --upgrade pip
           pip install requests beautifulsoup4 lxml
