@@ -17,8 +17,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install dependencies (inline)
+      - name: Install light deps (compare only)
         run: |
           pip install --upgrade pip
           pip install requests beautifulsoup4 lxml
@@ -31,12 +32,8 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           python personal_prj.py compare
-      
-      - name: Ensure Playwright cache dir exists
-        if: steps.compare.outputs.changed == 'true'
-        run: |
-          mkdir -p ~/.cache/ms-playwright
-      
+
+      # Cache browser binaries của Playwright (giảm thời gian notify)
       - name: Cache Playwright browsers
         if: steps.compare.outputs.changed == 'true'
         uses: actions/cache@v4
@@ -45,7 +42,7 @@ jobs:
           key: ${{ runner.os }}-playwright-chromium-v1
           restore-keys: |
             ${{ runner.os }}-playwright-
-      
+
       - name: Install playwright (only if changed)
         if: steps.compare.outputs.changed == 'true'
         env:
@@ -53,7 +50,7 @@ jobs:
         run: |
           pip install playwright
           python -m playwright install chromium
-      
+
       - name: Notify (only if changed)
         if: steps.compare.outputs.changed == 'true'
         env:
