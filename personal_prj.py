@@ -269,62 +269,106 @@ def send_telegram_photo(
 # Screenshot: Playwright (lazy import)
 # -----------------------------
 def capture_gold_table_screenshot(out_path: str = SCREENSHOT_PATH) -> str:
+    """
+    Chụp bảng giá vàng theo cách "CI-proof" giống bạc:
+    - Lấy HTML bằng requests
+    - Extract đúng table/container bằng BeautifulSoup
+    - Render HTML local (page.set_content) => không phụ thuộc ads/CDN/WAF
+    - Screenshot element
+    """
     from playwright.sync_api import sync_playwright
 
-    log("Render trang bằng Playwright để chụp screenshot (ẩn quảng cáo)...")
+    # 1) Lấy HTML bằng requests (nhanh + ít lỗi hơn goto)
+    html_text = fetch_gold_page(BAOTINMANHHAI_URL)
+
+    # 2) Parse và bóc đúng bảng
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    root = soup.select_one(".gold-table-content")
+    if not root:
+        # fallback nếu đổi class container
+        root = soup.select_one(".table-responsive.gold-table")
+    if not root:
+        raise RuntimeError("Không tìm thấy .gold-table-content hoặc .table-responsive.gold-table để chụp")
+
+    # Nếu root không phải table thì tìm table bên trong
+    table = root if root.name == "table" else root.select_one("table")
+    target_html = str(table) if table else str(root)
+
+    # 3) Render HTML local tối giản
+    doc = f"""
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Giá vàng Bảo Tín Mạnh Hải</title>
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 16px;
+      background: #ffffff;
+      font-family: Arial, Helvetica, sans-serif;
+    }}
+
+    /* Nếu target là table */
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 18px;
+    }}
+    th, td {{
+      border: 1px solid #d0d0d0;
+      padding: 10px 12px;
+      vertical-align: middle;
+    }}
+    thead th {{
+      background: #f2f2f2;
+      font-weight: 700;
+      text-align: left;
+    }}
+    tbody tr:nth-child(even) {{
+      background: #fafafa;
+    }}
+
+    /* Nếu target là div/table lồng nhau, ép cho nhìn ok */
+    .gold-table-content, .table-responsive.gold-table {{
+      width: 100%;
+    }}
+  </style>
+</head>
+<body>
+  {target_html}
+</body>
+</html>
+""".strip()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-remote-fonts"],
+        )
         page = browser.new_page(
-            viewport={"width": 1200, "height": 900},
+            viewport={"width": 1400, "height": 1200},
             device_scale_factor=2,
         )
+        page.set_default_timeout(60_000)
 
-        page.goto(BAOTINMANHHAI_URL, wait_until="domcontentloaded", timeout=60000)
+        # 4) Load nội dung local
+        page.set_content(doc, wait_until="domcontentloaded")
 
-        # Đợi bảng vàng xuất hiện
-        page.wait_for_selector(".gold-table-content", timeout=60000)
-
-        # -----------------------------
-        # 🔥 ẨN QUẢNG CÁO / OVERLAY
-        # -----------------------------
-        page.add_style_tag(content="""
-            /* Ẩn các phần tử fixed / sticky (quảng cáo nổi) */
-            *[style*="position: fixed"],
-            *[style*="position:sticky"],
-            *[style*="position: sticky"] {
-                display: none !important;
-            }
-
-            /* Ẩn các element có z-index cao bất thường */
-            * {
-                z-index: auto !important;
-            }
-
-            /* Một số selector quảng cáo phổ biến (nếu có) */
-            .ads, .ad, .adsbox, .popup, .modal, .overlay,
-            [id*="ads"], [class*="ads"],
-            [id*="popup"], [class*="popup"],
-            [id*="banner"], [class*="banner"] {
-                display: none !important;
-            }
-        """)
-
-        # Đợi DOM ổn định sau khi remove quảng cáo
-        page.wait_for_timeout(500)
-
-        # Ưu tiên chụp toàn bộ container bảng vàng
-        locator = page.locator(".table-responsive.gold-table")
-
-        # Fallback nếu container ngoài đổi class
+        # 5) Chụp element
+        # Nếu có table thì chụp table, không thì chụp container
+        locator = page.locator("table").first
         if locator.count() == 0:
-            locator = page.locator(".gold-table-content")
+            locator = page.locator("body").first
 
-        locator.screenshot(path=out_path)
+        locator.wait_for(state="visible", timeout=60_000)
+        locator.screenshot(path=out_path, timeout=60_000)
 
         browser.close()
 
-    log(f"✅ Đã tạo screenshot (đã loại quảng cáo): {out_path}")
+    log(f"✅ Đã tạo screenshot bảng vàng (CI-proof): {out_path}")
     return out_path
 
 # -----------------------------
@@ -391,4 +435,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
