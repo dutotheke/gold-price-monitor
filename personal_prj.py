@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 # -----------------------------
 # Cấu hình / hằng số
 # -----------------------------
-BAOTINMANHHAI_URL = "https://baotinmanhhai.vn/gia-vang-hom-nay"
+BAOTINMANHHAI_URL = "https://baotinmanhhai.vn/vi/bang-gia-vang"
 
 REQUEST_TIMEOUT = 20  # giây
 TELEGRAM_RETRIES = 3
