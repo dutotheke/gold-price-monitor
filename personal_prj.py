@@ -7,6 +7,11 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
+import certifi
+import urllib3
+from requests.adapters import HTTPAdapter
+from requests.exceptions import SSLError, RequestException
+from urllib3.util.retry import Retry
 
 import requests
 from bs4 import BeautifulSoup
@@ -114,6 +119,58 @@ def write_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
+def build_requests_session() -> requests.Session:
+    session = requests.Session()
+
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD", "OPTIONS"],
+        raise_on_status=False,
+    )
+
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def _http_get_with_ssl_fallback(
+    url: str,
+    headers: dict,
+    timeout: int = REQUEST_TIMEOUT,
+) -> requests.Response:
+    session = build_requests_session()
+
+    try:
+        resp = session.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            verify=certifi.where(),
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+        return resp
+    except SSLError as e:
+        log(f"⚠️ SSL verify failed với certifi: {e}")
+
+    log("⚠️ Fallback sang verify=False cho baotinmanhhai.vn")
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    resp = session.get(
+        url,
+        headers=headers,
+        timeout=timeout,
+        verify=False,
+        allow_redirects=True,
+    )
+    resp.raise_for_status()
+    return resp
+
 # -----------------------------
 # Crawler (HTML mới)
 # -----------------------------
@@ -123,11 +180,18 @@ def fetch_gold_page(url: str = BAOTINMANHHAI_URL) -> str:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0 Safari/537.36"
-        )
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
+
     log(f"Đang tải trang giá vàng: {url}")
-    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    resp = _http_get_with_ssl_fallback(url, headers=headers, timeout=REQUEST_TIMEOUT)
     return resp.text
 
 
